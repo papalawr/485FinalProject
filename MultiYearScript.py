@@ -1,31 +1,29 @@
-#script builds on basescript adapting it to accommodate for multiple years
+# Script builds on basescript adapting it to accommodate for multiple years
 
 import arcpy
 arcpy.env.overwriteOutput = True
 arcpy.env.workspace = r"C:\PSU\GEOG485\FinalProjectData\fire24_1.gdb"
 
-#base feature class variable
+# Base feature class variable
 firePerimeterFC = "firep24_1"
 summaryTable = "fire_summary"
 
-#records of interest variables
-yearsOfInterest = [2025 ,2024 ,2023, 2022, 2021, 2020]
+# Records of interest variables
+yearsOfInterest = [2025, 2024, 2023, 2022, 2021, 2020]
 
-#fields of interest variables
+# Fields of interest variables
 yearField = 'YEAR_'
 acresField = "GIS_ACRES"
 startdateField = "ALARM_DATE"
 enddateField = "CONT_DATE"
 
-#counter variables
+# Counter variables for ALL years combined
 totalAcresBurntCounter = 0
 totalBurnDaysCounter = 0
-totalAcresBurntInYearCounter = 0
-totalBurnDaysInYearCounter = 0
 
-#new field variables for the fires in each year
+# New field variables for the fires in each year
 firesPercentageOfAcreageBurnt = 'PercentOfTotalAcres'
-firesPercentageofDaysBurnt= 'PercentOfTotalDays'
+firesPercentageofDaysBurnt = 'PercentOfTotalDays'
 dataType = 'DOUBLE'
 
 # Delete table if it already exists
@@ -43,21 +41,25 @@ arcpy.management.AddFields(summaryTable, [
     ["PofAllAcres", "DOUBLE"],
     ["PofAllDays", "DOUBLE"]
 ])
-print('created summary table and fields')
+print('Created summary table and fields')
 
-#get a total count of burnt acres and days on fire from master dataset
+# Get a total count of burnt acres and days on fire from master dataset
 with arcpy.da.SearchCursor(firePerimeterFC, [acresField, startdateField, enddateField]) as totalCountsCursor:
     for totalCounts in totalCountsCursor:
         if totalCounts[0]:
             totalAcresBurntCounter += totalCounts[0]
         if totalCounts[1] and totalCounts[2]:
-            totalBurnDaysCounter += (totalCounts[2]-totalCounts[1]).days
+            totalBurnDaysCounter += (totalCounts[2] - totalCounts[1]).days
 
-print(totalAcresBurntCounter)
-print(totalBurnDaysCounter)
+print(f"Total acres burnt (all years): {totalAcresBurntCounter:,.0f}")
+print(f"Total burn days (all years): {totalBurnDaysCounter:,.0f}")
 
 try:
     for year in yearsOfInterest:
+        # RESET COUNTERS FOR EACH YEAR - THIS IS THE FIX!
+        totalAcresBurntInYearCounter = 0
+        totalBurnDaysInYearCounter = 0
+        
         yearQuery = f"{yearField} = {year}"
 
         # SelectLayerByAttribute returns a layer object
@@ -71,10 +73,9 @@ try:
         outputFC = f"fires_{year}"
         arcpy.management.CopyFeatures(yearsLayer, outputFC)
 
-        print(f'created output fire features for {year}')
+        print(f'Created output fire features for {year}')
 
-
-#use search cursor to select fields of interest within each fire feature class
+        # Use search cursor to select fields of interest within each fire feature class
         with arcpy.da.SearchCursor(outputFC, [acresField, startdateField, enddateField]) as yearTotals:
             for yearCounts in yearTotals:
                 if yearCounts[0]:
@@ -82,47 +83,75 @@ try:
                 if yearCounts[1] and yearCounts[2]:
                     totalBurnDaysInYearCounter += (yearCounts[2] - yearCounts[1]).days
 
-        print(f"{year} had {totalAcresBurntInYearCounter} acres burnt")
-        print(f"{year} had {totalBurnDaysInYearCounter} burn days")
+        print(f"{year} had {totalAcresBurntInYearCounter:,.0f} acres burnt")
+        print(f"{year} had {totalBurnDaysInYearCounter:,.0f} burn days")
 
+        # Add fields to each created feature class
+        arcpy.management.AddFields(outputFC, [
+            [firesPercentageOfAcreageBurnt, dataType], 
+            [firesPercentageofDaysBurnt, dataType]
+        ])
 
-#add fields to each created feature class
-        arcpy.management.AddFields(outputFC, [[firesPercentageOfAcreageBurnt, dataType], [firesPercentageofDaysBurnt, dataType]])
+        print(f'Added new fields to {year} feature class')
 
-        print('added new fields to feature classes')
-
-#populate new fields with an update cursor
+        # Populate new fields with an update cursor
         with arcpy.da.UpdateCursor(outputFC, (firesPercentageOfAcreageBurnt, acresField,
                                               firesPercentageofDaysBurnt, startdateField,
-                                                enddateField)) as cursor:
+                                              enddateField)) as cursor:
             for row in cursor:
-                row[0] = row[1] / totalAcresBurntInYearCounter * 100
+                # Calculate percentage of year's total acres
+                if totalAcresBurntInYearCounter > 0:
+                    row[0] = (row[1] / totalAcresBurntInYearCounter) * 100
+                else:
+                    row[0] = 0
 
+                # Calculate percentage of year's total days
                 startDate = row[3]
                 endDate = row[4]
-                if startDate and endDate:
-                    row[2] = ((endDate - startDate).days) / totalBurnDaysInYearCounter * 100
+                if startDate and endDate and totalBurnDaysInYearCounter > 0:
+                    fireDays = (endDate - startDate).days
+                    row[2] = (fireDays / totalBurnDaysInYearCounter) * 100
+                else:
+                    row[2] = 0
 
                 cursor.updateRow(row)
 
-        print('populated new fields in feature classes')
+        print(f'Populated new fields in {year} feature class')
 
-#update summary table field values
-        pOfAllAcres = (totalAcresBurntInYearCounter / totalAcresBurntCounter) * 100 if totalAcresBurntCounter else 0
-        pOfAllDays = (totalBurnDaysInYearCounter / totalBurnDaysCounter) * 100 if totalBurnDaysCounter else 0
+        # Update summary table field values
+        pOfAllAcres = (totalAcresBurntInYearCounter / totalAcresBurntCounter) * 100 if totalAcresBurntCounter > 0 else 0
+        pOfAllDays = (totalBurnDaysInYearCounter / totalBurnDaysCounter) * 100 if totalBurnDaysCounter > 0 else 0
 
-# Insert a summary row into summary table
+        # Insert a summary row into summary table
         with arcpy.da.InsertCursor(summaryTable,
                                    ["Year", "TotalAcres", "TotalDays", "PofAllAcres", "PofAllDays"]) as finalcursor:
             finalcursor.insertRow((year, totalAcresBurntInYearCounter, totalBurnDaysInYearCounter, pOfAllAcres, pOfAllDays))
 
-    print('populated summary table')
-except:
-    print("failed to select fires from the given years")
+    print('Populated summary table successfully!')
+    
+except Exception as e:
+    print(f"Failed to select fires from the given years: {e}")
 
 finally:
-    arcpy.management.Delete(yearsLayer)
-    del totalCountsCursor, totalCounts
-    del yearTotals, yearCounts
-    del row, cursor
-    del finalcursor
+    # Clean up - check if variables exist before trying to delete
+    try:
+        if 'yearsLayer' in locals():
+            arcpy.management.Delete(yearsLayer)
+    except:
+        pass
+    
+    # Delete cursor references
+    if 'totalCountsCursor' in locals():
+        del totalCountsCursor
+    if 'totalCounts' in locals():
+        del totalCounts
+    if 'yearTotals' in locals():
+        del yearTotals
+    if 'yearCounts' in locals():
+        del yearCounts
+    if 'row' in locals():
+        del row
+    if 'cursor' in locals():
+        del cursor
+    if 'finalcursor' in locals():
+        del finalcursor
